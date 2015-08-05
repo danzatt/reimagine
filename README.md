@@ -10,6 +10,9 @@ Other options are:
 	-r, --raw	dump the DATA tag to <outfile>
 	-p, --patch	patch the file using ibootsup
 ```
+
+**Licensed under GNU GPL.** 
+
 #Building
 `git clone --recursive git@github.com:danzatt/reimagine.git`  
 `cd reimagine/opensn0w-X/src && make all`  
