@@ -1,22 +1,3 @@
-/*
- *  Copyright 2015, danzatt <twitter.com/danzatt>
- *  All rights reserved.
- * 
- *  This program is free software: you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation, either version 3 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
- * 
- */
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
@@ -75,12 +56,13 @@ void add_chunk(void* data, size_t size){
     last_chunk = my_chunk;
 }
 
-void my_callback(Image3Header* tag)
+void my_callback(Image3Header* tag, Image3RootHeader* root)
 {
-    if(tag->magic == kImage3TagKeyBag)
+    /* remove KBAG if we're decrypting */
+    if(tag->magic == kImage3TagKeyBag && hasIV && hasKey)
         return;
 
-    /*decrypt the image*/
+    /* decrypt the image */
     if(tag->magic == kImage3TagData && hasIV && hasKey)
     {
         /* Ported from xpwn. */
@@ -105,17 +87,23 @@ void my_callback(Image3Header* tag)
         memcpy(ivec, my_iv, 16);
 
         /* Decrypt date after the tag structure till dataSize aligned to the multiple of 16 (due to AES) */
-        AES_cbc_encrypt((unsigned char *) (tag + 1), (unsigned char *) (tag + 1), (tag->dataSize / 16) * 16, &dec_key, ivec, AES_DECRYPT);
-        /*AES_cbc_encrypt((char *) tag + sizeof(Image3Header), (char *) tag + sizeof(Image3Header), (tag->dataSize / 16) * 16, &dec_key, ivec, AES_DECRYPT);*/
+        AES_cbc_encrypt((unsigned char *) (tag + 1),
+                        (unsigned char *) (tag + 1),
+                        (tag->dataSize / 16) * 16,
+                        &dec_key,
+                        ivec,
+                        AES_DECRYPT);
 
         if (memcmp (tag + 1, ARM_BRANCH_OPCODE, OPCODE_LENGTH)) {
             printf("[W] This doesn't look like ARM image. You might have supplied wrong key/IV.\n");
         }
 
-        if (shouldPatch)
+        if (shouldPatch && (root->shshExtension.imageType == kImage3TypeiBoot ||
+                            root->shshExtension.imageType == kImage3TypeiBEC ||
+                            root->shshExtension.imageType == kImage3TypeiBSS))
         {
             struct mapped_image img;
-            img.image = tag + 1;
+            img.image = (uint8_t *) tag + 1;
             img.size = (tag->dataSize / 16) * 16;
 
             if (ibootsup_set_image(img) != 0)
