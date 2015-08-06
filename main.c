@@ -122,7 +122,7 @@ void my_callback(Image3Header* tag, Image3RootHeader* root)
                             root->shshExtension.imageType == kImage3TypeiBSS))
         {
             struct mapped_image img;
-            img.image = (uint8_t *) tag + 1;
+            img.image = (uint8_t *) (tag + 1);
             img.size = (tag->dataSize / 16) * 16;
 
             if (ibootsup_set_image(img) != 0)
