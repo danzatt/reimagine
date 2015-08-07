@@ -51,7 +51,7 @@ int hasIV = 0;
 int shouldDump = 0;
 int shouldList = 0;
 int shouldPatch = 0;
-//const char *outfile = NULL;
+const char *outfile = NULL;
 
 size_t keysize;
 
