@@ -36,6 +36,13 @@
 #define ARM_BRANCH_OPCODE		"\x0e\x00\x00\xea"
 #define OPCODE_LENGTH			4
 
+#define PRINT_MAGIC(a)                  \
+            printf("'%c%c%c%c'",        \
+                    (char)(a >> 24),    \
+                    (char)(a >> 16),    \
+                    (char)(a >> 8),     \
+                    (char)(a))          \
+
 unsigned int* key = NULL;
 unsigned int* iv = NULL;
 
@@ -44,7 +51,7 @@ int hasIV = 0;
 int shouldDump = 0;
 int shouldList = 0;
 int shouldPatch = 0;
-const char *outfile = NULL;
+//const char *outfile = NULL;
 
 size_t keysize;
 
@@ -149,23 +156,16 @@ void my_callback(Image3Header* tag, Image3RootHeader* root)
         }
     }
 
-    if (shouldList)
+    if (shouldList && !shouldDump)
     {
-        printf("Tag '%c%c%c%c' with data of size %u.\n",
-               (char)(tag->magic >> 24),
-               (char)(tag->magic >> 16),
-               (char)(tag->magic >> 8),
-               (char)(tag->magic),
-               tag->dataSize);
+        PRINT_MAGIC(tag->magic);
+        printf(" (size: 0x%x\t dataSize: \t0x%x)\n", tag->size, tag->dataSize);
     }
 
     if (shouldDump)
     {
-        printf("Tag '%c%c%c%c' contains:\n",
-               (char)(tag->magic >> 24),
-               (char)(tag->magic >> 16),
-               (char)(tag->magic >> 8),
-               (char)(tag->magic));
+        PRINT_MAGIC(tag->magic);
+        printf(" (size: 0x%x\t dataSize: \t0x%x):\n", tag->size, tag->dataSize);
         hexdump(tag + 1, tag->dataSize);
     }
 
@@ -243,6 +243,20 @@ int main(int argc, char* argv[])
     assert(!image3_map_file(argv[1], &image_buffer));
 
     Image3RootHeader *orig = image_buffer;
+
+    if(shouldDump || shouldList)
+    {
+        printf("Root magic: \t");
+        PRINT_MAGIC(orig->header.magic);
+        printf("\nRoot size: \t0x%x\n", orig->header.size);
+        printf("Root data size: \t0x%x\n", orig->header.dataSize);
+
+        printf("Root image type: \t");
+        PRINT_MAGIC(orig->shshExtension.imageType);
+        printf("\nRoot shsh offset: \t0x%x\n", orig->shshExtension.shshOffset);
+    }
+
+
 /*
     printf("orig offset is %u\n", orig->shshExtension.shshOffset);
     printf("orig size is %u\n", orig->header.dataSize);
@@ -250,8 +264,8 @@ int main(int argc, char* argv[])
 
     image3_iterate_tags(image_buffer, &my_callback);
 
-    int shsh;
-    int data;
+    int shsh = 0;
+    int data = 0;
 
     size_t total_size = 0;
 
@@ -277,14 +291,17 @@ int main(int argc, char* argv[])
                (char)(*magic));*/
 
         if(*magic == kImage3TagData)
-            shsh = (uint32_t) next_free;
-        if(*magic == kImage3TagSignature)
             data = (uint32_t) next_free;
+        if(*magic == kImage3TagSignature)
+            shsh = (uint32_t) next_free;
 
         memcpy(out_buffer + next_free, i->data, i->size);
         next_free += i->size;
         chunks++;
     }
+
+    /* SHSH tag is not always present, if it isn't present we use the end of file (next_free) in calculating offset */
+    shsh = shsh ? shsh : next_free;
 
 /*
     printf("%u chunks\n", chunks);
