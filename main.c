@@ -276,7 +276,13 @@ void my_callback(Image3Header *tag, Image3RootHeader *root)
         {
             struct mapped_image img;
             img.image = (uint8_t *) (tag + 1);
-            img.size = (tag->dataSize / 16) * 16;
+            img.size = tag->dataSize;
+
+            if (hasKey && hasIV)
+            {
+                img.image = decompress_me;
+                img.size = tag->dataSize + (16 - (tag->dataSize % 16));
+            }
 
             if (ibootsup_set_image(img) != 0)
                 printf("[-] Couldn't set image for patching. Is this correct file ?\n");
