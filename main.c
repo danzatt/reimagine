@@ -133,11 +133,9 @@ int verify_data(const uint32_t magic, const void *buffer)
         case kImage3TypeKernel:
         {
             uint32_t *byte_ptr = (uint32_t *) buffer;
-            uint32_t kern_magic = *byte_ptr;
-            printf("kernel magic 0x%x\n", kern_magic);
-            printf("kMachCigam 0x%x\n", kMachCigam);
+            DEBUG_PRINT("kernel magic 0x%x\n", kern_magic);
 
-            switch (kern_magic)
+            switch (*byte_ptr)
             {
                 case kMachCigam:
                 {
