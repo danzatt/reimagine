@@ -5,8 +5,8 @@ LDFLAGS= -L/usr/lib/x86_64-linux-gnu -lssl -lcrypto
 
 all: reimagine
 
-reimagine: main.o helper.o opensn0w-X/src/image3.o opensn0w-X/src/util.o opensn0w-X/src/ibootsup.o opensn0w-X/src/patch.o
-	$(CC) $(LDFLAGS) helper.o main.o opensn0w-X/src/image3.o opensn0w-X/src/util.o opensn0w-X/src/ibootsup.o opensn0w-X/src/patch.o -o reimagine
+reimagine: main.o helper.o opensn0w-X/src/image3.o opensn0w-X/src/util.o opensn0w-X/src/ibootsup.o opensn0w-X/src/patch.o opensn0w-X/src/kcache.o opensn0w-X/src/macho_loader.o
+	$(CC) $(LDFLAGS) helper.o main.o opensn0w-X/src/image3.o opensn0w-X/src/util.o opensn0w-X/src/ibootsup.o opensn0w-X/src/patch.o opensn0w-X/src/kcache.o opensn0w-X/src/macho_loader.o -o reimagine
 
 main.o: main.c
 	$(CC) $(CFLAGS) main.c

@@ -28,6 +28,11 @@
 #include "opensn0w-X/include/util.h"
 #include "opensn0w-X/include/structs.h"
 #include "opensn0w-X/include/ibootsup.h"
+#include "opensn0w-X/include/kcache.h"
+
+#define __target_arm__
+#include "opensn0w-X/include/macho.h"
+#undef __target_arm__
 
 #include "helper.h"
 
@@ -43,6 +48,17 @@
                     (char)(a >> 8),     \
                     (char)(a))          \
 
+
+//#define DEBUG
+
+#ifdef DEBUG
+#define DEBUG_PRINT(...) do{ fprintf( stderr, __VA_ARGS__ ); } while( 0 )
+#else
+#define DEBUG_PRINT(...) do{ } while ( 0 )
+#endif
+
+char *outfile = NULL;
+
 unsigned int* key = NULL;
 unsigned int* iv = NULL;
 
@@ -51,7 +67,8 @@ int hasIV = 0;
 int shouldDump = 0;
 int shouldList = 0;
 int shouldPatch = 0;
-const char *outfile = NULL;
+int dumpData = 0;
+int shouldDecompress = 0;
 
 size_t keysize;
 
@@ -64,69 +81,200 @@ typedef struct chunk {
 } chunk;
 
 struct chunk *first_chunk = NULL;
-struct chunk *last_chunk = NULL;
 
-void add_chunk(void* data, size_t size){
+void add_chunk(void *data, size_t size){
+#ifdef DEBUG
+    uint32_t *magic = data;
+    printf("adding chunk ");
+    PRINT_MAGIC(*magic);
+    printf("\n");
+#endif
+
     struct chunk *my_chunk = _xmalloc(sizeof(chunk));
-
-    if(first_chunk == NULL){
-        first_chunk = my_chunk;
-        last_chunk = my_chunk;
-    };
-
-    my_chunk->next = NULL;
     my_chunk->data = data;
     my_chunk->size = size;
+    my_chunk->next = NULL;
 
-    last_chunk->next = my_chunk;
-    last_chunk = my_chunk;
+    if (first_chunk == NULL)
+    {
+        first_chunk = my_chunk;
+        return;
+    }
+
+    struct chunk *a = first_chunk;
+    while (a->next != NULL)
+        a = a->next;
+
+    a->next = my_chunk;
 }
 
-void my_callback(Image3Header* tag, Image3RootHeader* root)
+int verify_data(const uint32_t magic, const void *buffer)
 {
+
+    switch (magic)
+    {
+        case kImage3TypeiBSS:
+        case kImage3TypeiBEC:
+        case kImage3TypeiBoot:
+        case kImage3TypeiLLB:
+        {
+            if (memcmp(buffer, ARM_BRANCH_OPCODE, OPCODE_LENGTH))
+            {
+                printf("[W] This doesn't look like ARM image.\n");
+                return 0;
+            }
+            else
+            {
+                printf("[i] This looks like ARM image.\n");
+                return 1;
+            }
+        }
+
+        case kImage3TypeKernel:
+        {
+            uint32_t *byte_ptr = (uint32_t *) buffer;
+            uint32_t kern_magic = *byte_ptr;
+            printf("kernel magic 0x%x\n", kern_magic);
+            printf("kMachCigam 0x%x\n", kMachCigam);
+
+            switch (kern_magic)
+            {
+                case kMachCigam:
+                {
+                    printf("[i] This is endian swapped MachO file.\n");
+                    return 1;
+                }
+                case kMachMagic:
+                {
+                    printf("[i] This is MachO file.\n");
+                    return 1;
+                }
+                case __builtin_bswap32('comp'):
+                {
+                    if ( *(byte_ptr + 1) == __builtin_bswap32 ('lzss'))
+                        printf("[i] This is lzss compressed kernel.\n");
+                    else
+                        printf("[i] This is compressed kernel.\n");
+                    return 1;
+                }
+                default:
+                {
+                    printf("[W] This doesn't look like kernel.\n");
+                    return 0;
+                }
+            }
+        }
+
+        case kImage3TypeDeviceTree:
+        {
+            /* borrowed from J (http://newosxbook.com/src.jl?tree=listings&file=6-bonus.c) */
+            typedef struct OpaqueDTEntry {
+                uint32_t            nProperties;    // Number of props[] elements (0 => end)
+                uint32_t            nChildren;      // Number of children[] elements
+            } DeviceTreeNode;
+
+            DeviceTreeNode *dtn = (DeviceTreeNode *) buffer;
+            if (dtn->nProperties > 20)
+            {
+                printf ("[W] Device tree has more than 20 properties.\n");
+                return 0;
+            }
+            return 1;
+        }
+
+        default:
+        {
+            printf("[W] Don't support verifying ");
+            PRINT_MAGIC(magic);
+            printf(" files. You should check if the decryption went good manually.\n");
+            return 1;
+        }
+    }
+}
+
+void my_callback(Image3Header *tag, Image3RootHeader *root)
+{
+    int chunk_added = 0;
+
     /* remove KBAG if we're decrypting */
     if(tag->magic == kImage3TagKeyBag && hasIV && hasKey)
         return;
 
     /* decrypt the image */
-    if(tag->magic == kImage3TagData && hasIV && hasKey)
+    if(tag->magic == kImage3TagData)
     {
-        /* Ported from xpwn. */
-        uint8_t my_iv[16];
-        int i;
-        uint8_t bKey[32];
+        void *decompress_me = (tag + 1);
 
-        int keyBits = keysize * 8;
+        if (hasIV && hasKey)
+        {
+            /* Ported from xpwntool & decodeimg3.pl */
+            uint8_t my_iv[16];
+            int i;
+            uint8_t bKey[32];
 
-        for(i = 0; i < 16; i++) {
-            my_iv[i] = iv[i] & 0xff;
-        }
+            int keyBits = keysize * 8;
 
-        for(i = 0; i < (keyBits / 8); i++) {
-            bKey[i] = key[i] & 0xff;
-        }
+            for (i = 0; i < 16; i++)
+            {
+                my_iv[i] = iv[i] & 0xff;
+            }
 
-        AES_KEY dec_key;
-        AES_set_decrypt_key(bKey, keyBits, &dec_key);
+            for (i = 0; i < (keyBits / 8); i++)
+            {
+                bKey[i] = key[i] & 0xff;
+            }
 
-        uint8_t ivec[16];
-        memcpy(ivec, my_iv, 16);
+            AES_KEY dec_key;
+            AES_set_decrypt_key(bKey, keyBits, &dec_key);
 
-        /* Decrypt date after the tag structure till dataSize aligned to the multiple of 16 (due to AES) */
-        AES_cbc_encrypt((unsigned char *) (tag + 1),
-                        (unsigned char *) (tag + 1),
-                        (tag->dataSize / 16) * 16,
-                        &dec_key,
-                        ivec,
-                        AES_DECRYPT);
+            uint8_t ivec[16];
+            memcpy(ivec, my_iv, 16);
 
-        if (memcmp (tag + 1, ARM_BRANCH_OPCODE, OPCODE_LENGTH)) {
-            printf("[W] This doesn't look like ARM image. You might have supplied wrong key/IV.\n");
+            int size = tag->dataSize + (16 - (tag->dataSize % 16));
+            void *buf = _xmalloc(size);
+            memcpy(buf, (tag + 1), size);
+
+            /* Decrypt data after the tag structure till dataSize aligned to the multiple of 16 (due to AES CBC) */
+            /*AES_cbc_encrypt((unsigned char *) (tag + 1),
+                            (unsigned char *) (tag + 1),
+                            (tag->dataSize / 16) * 16,
+                            &dec_key,
+                            ivec,
+                            AES_DECRYPT);*/
+
+            AES_cbc_encrypt((unsigned char *) (buf),
+                            (unsigned char *) (buf),
+                            size,
+                            &dec_key,
+                            ivec,
+                            AES_DECRYPT);
+
+            if(!verify_data(root->shshExtension.imageType, buf))
+                printf("[W] You might have supplied wrong key/IV.\n");
+
+            Image3Header *new_tag = _xmalloc(sizeof(Image3Header));
+
+            /*new_tag->magic = tag->magic;
+            new_tag->dataSize = (tag->dataSize / 16) * 16;
+            new_tag->size = new_tag->dataSize + sizeof(Image3Header);*/
+
+            new_tag->magic = tag->magic;
+            new_tag->dataSize = size;
+            new_tag->size = new_tag->dataSize + sizeof(Image3Header);
+
+            if (!dumpData) /* omit the header if we're just dumping data */
+                add_chunk(new_tag, sizeof(Image3Header));
+
+            add_chunk(buf, new_tag->dataSize); /* add data */
+            chunk_added = 1; /* prevent duplication */
+
+            decompress_me = buf;
         }
 
         if (shouldPatch && (root->shshExtension.imageType == kImage3TypeiBoot ||
                             root->shshExtension.imageType == kImage3TypeiBEC ||
-                            root->shshExtension.imageType == kImage3TypeiBSS))
+                            root->shshExtension.imageType == kImage3TypeiBSS ||
+                            root->shshExtension.imageType == kImage3TypeiLLB))
         {
             struct mapped_image img;
             img.image = (uint8_t *) (tag + 1);
@@ -139,22 +287,81 @@ void my_callback(Image3Header* tag, Image3RootHeader* root)
 
         }
 
-        /*dump only decrypted data*/
-        if (outfile != NULL)
+        if (shouldDecompress && root->shshExtension.imageType == kImage3TypeKernel)
         {
-            FILE* fd;
-            fd = fopen(outfile, "wb");
+            int decompressed_size = 0;
+            void *decompressed;
 
-            if (!fd){
-                printf("[-] Can't open file for writing.\n");
-            };
+            if (kcache_decompress_kernel (decompress_me, NULL, &decompressed_size)) {
+                printf("[-] Cannot decompress kernel.\n");
+                goto cont;
+            }
 
-            fwrite(tag + 1, tag->size - sizeof(Image3Header), 1, fd);
+            printf ("decompressed kernelcache size %d\n", decompressed_size);
+            decompressed = _xmalloc (decompressed_size);
+            if (kcache_decompress_kernel (decompress_me, decompressed, &decompressed_size)) {
+                free (decompressed);
+                printf("[-] Cannot decompress kernel.\n");
+                goto cont;
+            }
 
-            fclose(fd);
-            exit(0);
+            verify_data(root->shshExtension.imageType, decompressed);
+
+            /* if we have decrypted the file beforehand we must replace the last chunk (decrypted data) with new chunk
+             * containing decompressed data and fix tag header (chunk which is 2nd from end) */
+            if (hasKey && hasIV)
+            {
+                /* find the last tag and remove it */
+                struct chunk *last = first_chunk;
+                while (last->next != NULL)
+                {
+                    last = last->next;
+                }
+#ifdef DEBUG
+                uint32_t *magic = last->data;
+                printf("last ");
+                PRINT_MAGIC(*magic);
+                printf("\n");
+#endif
+                free(last->data);
+
+                last->data = decompressed;
+                last->size = decompressed_size;
+
+                if(!dumpData)
+                {
+                    struct chunk *second_from_end = first_chunk;
+                    /* we won't segfault here     ˅ because we're sure we have added at least 2 chunks */
+                    while (second_from_end->next->next != NULL)
+                        second_from_end = second_from_end->next;
+#ifdef DEBUG
+                    magic = second_from_end->data;
+                    printf("second_from_end ");
+                    PRINT_MAGIC(*magic);
+                    printf("\n");
+#endif
+                    Image3Header *data_tag_header = second_from_end->data;
+                    data_tag_header->dataSize = decompressed_size;
+                    data_tag_header->size = data_tag_header->dataSize + sizeof(Image3Header);
+                }
+            }
+            else
+            {
+                Image3Header *new_tag = _xmalloc(sizeof(Image3Header));
+                new_tag->magic = tag->magic;
+                new_tag->dataSize = decompressed_size;
+                new_tag->size = new_tag->dataSize + sizeof(Image3Header);
+
+                if (!dumpData) /* omit the header if we're just dumping data */
+                    add_chunk(new_tag, sizeof(Image3Header));
+
+                add_chunk(decompressed, decompressed_size); /* add data */
+                chunk_added = 1;
+            }
         }
     }
+
+    cont:
 
     if (shouldList && !shouldDump)
     {
@@ -169,7 +376,19 @@ void my_callback(Image3Header* tag, Image3RootHeader* root)
         hexdump(tag + 1, tag->dataSize);
     }
 
-    add_chunk(tag, tag->size);
+    if (!chunk_added)
+    {
+        /* if dumpData is set we only want DATA tag */
+        if (dumpData && tag->magic == kImage3TagData)
+        {
+            add_chunk((tag+1), tag->size - sizeof(Image3Header));
+        }
+
+        if (!dumpData)
+        {
+            add_chunk(tag, tag->size);
+        }
+    }
 };
 
 
@@ -177,28 +396,30 @@ int main(int argc, char* argv[])
 {
 
     if(argc < 3) {
-        printf("Usage: %s <infile> <outfile> -iv <IV> -k <key>\n", argv[0]);
+        printf("Usage: %s <infile> [<outfile>]\n", argv[0]);
         printf("\nOther options are:\n");
+        printf("\t-iv <IV>\tset IV for decryption\n");
+        printf("\t-k <key>\tset key for decryption\n");
         printf("\t-d, --dump\tprint tag names and hexdump their content\n");
         printf("\t\t\t(Note: this option works on the final decrypted/patched file)\n");
-        printf("\t-l, --list\tlist tag present in file\n");
+        printf("\t-l, --list\tlist tags present in file\n");
         printf("\t-r, --raw\tdump the DATA tag to <outfile>\n");
         printf("\t-p, --patch\tpatch the file using ibootsup\n");
+        printf("\t-x, --decompress\tdecompress lzss compressed kernelcache\n");
         return -1;
     }
 
-    int argNo = 3;
+    int argNo;
+
+    if (argv[2][0] == '-')
+        argNo = 2;
+    else
+    {
+        argNo = 3;
+        outfile = argv[2];
+    }
+
     while(argNo < argc) {
-
-        /*if(strcmp(argv[argNo], "-decrypt") == 0) {
-            doDecrypt = 1;
-            template = createAbstractFileFromFile(fopen(argv[1], "rb"));
-            if(!template) {
-                fprintf(stderr, "error: cannot open template\n");
-                return 1;
-            }
-        }*/
-
         if(strcmp(argv[argNo], "-l") == 0 || strcmp(argv[argNo], "--list") == 0) {
             shouldList = 1;
         }
@@ -208,16 +429,19 @@ int main(int argc, char* argv[])
         }
 
         if(strcmp(argv[argNo], "-r") == 0 || strcmp(argv[argNo], "--raw") == 0) {
-            outfile = argv[2];
+            dumpData = 1;
         }
 
         if(strcmp(argv[argNo], "-p") == 0 || strcmp(argv[argNo], "--patch") == 0) {
             shouldPatch = 1;
         }
 
+        if(strcmp(argv[argNo], "-x") == 0 || strcmp(argv[argNo], "--decompress") == 0) {
+            shouldDecompress = 1;
+        }
+
         if(strcmp(argv[argNo], "-k") == 0 && (argNo + 1) < argc) {
             hexToInts(argv[argNo + 1], &key, &keysize);
-            printf("keysize is %zu\n", keysize);
 
             if(keysize % 8 != 0)
                 printf("[-] Check your key, it has to be 16, 24 or 32 bytes.\n");
@@ -238,13 +462,51 @@ int main(int argc, char* argv[])
         argNo++;
     }
 
+    if (outfile == NULL)
+    {
+        char *trailer = _xmalloc(21);
+
+        if (hasKey && hasIV)
+            strcat(trailer, ".dec");
+
+        if (shouldPatch)
+            strcat(trailer, ".pwn");
+
+        if (dumpData)
+            strcat(trailer, ".raw");
+
+        if (shouldDecompress)
+            strcat(trailer, ".macho");
+
+        if (trailer[0] != '\0')
+        {
+            outfile = _xmalloc(strlen(argv[1]) + strlen(trailer) + 1);
+            strcat(outfile, argv[1]);
+            strcat(outfile, trailer);
+        }
+
+        free(trailer);
+    }
+
+    DEBUG_PRINT("outfile is %s\n", outfile);
+
     void *image_buffer = NULL;
 
-    assert(!image3_map_file(argv[1], &image_buffer));
+    if (image3_map_file(argv[1], &image_buffer) != 0)
+    {
+        printf("[-] Can't open file.\n");
+        return -1;
+    }
+
+    if (image_buffer == NULL)
+    {
+        printf("[-] error\n");
+        return -1;
+    }
 
     Image3RootHeader *orig = image_buffer;
 
-    if(shouldDump || shouldList)
+    if (shouldDump || shouldList)
     {
         printf("Root magic: \t");
         PRINT_MAGIC(orig->header.magic);
@@ -256,77 +518,87 @@ int main(int argc, char* argv[])
         printf("\nRoot shsh offset: \t0x%x\n", orig->shshExtension.shshOffset);
     }
 
-
-/*
-    printf("orig offset is %u\n", orig->shshExtension.shshOffset);
-    printf("orig size is %u\n", orig->header.dataSize);
-*/
-
     image3_iterate_tags(image_buffer, &my_callback);
 
-    int shsh = 0;
-    int data = 0;
-
     size_t total_size = 0;
-
     foreach_chunk(i)
         total_size += i->size;
 
-    /*printf("total_size %zu\n", total_size);*/
+    DEBUG_PRINT("total_size %zu\n", total_size);
 
-    uint8_t *out_buffer = _xmalloc(total_size + sizeof(Image3RootHeader));
+    /*......................................................... ˅ if we just want to dump DATA we don't add root header*/
+    uint8_t *out_buffer = _xmalloc(total_size + (dumpData ? 0 : sizeof(Image3RootHeader)));
 
-    /* skip the root header, we'll get back to it later */
-    size_t next_free = sizeof(Image3RootHeader);
-
-    int chunks = 0;
-    foreach_chunk(i)
+    if (!dumpData)
     {
-        uint32_t *magic = i->data;
+        /* skip the root header, we'll get back to it later */
+        size_t next_free = sizeof(Image3RootHeader);
 
-        /*printf("Parsing chunk '%c%c%c%c'\n",
-               (char)(*magic >> 24),
-               (char)(*magic >> 16),
-               (char)(*magic >> 8),
-               (char)(*magic));*/
+        int shsh = 0;
+        int data = 0;
+        foreach_chunk(i)
+        {
+            uint32_t *magic = i->data;
 
-        if(*magic == kImage3TagData)
-            data = (uint32_t) next_free;
-        if(*magic == kImage3TagSignature)
-            shsh = (uint32_t) next_free;
+#ifdef DEBUG
+            printf("Parsing chunk ");
+            PRINT_MAGIC(*magic);
+            printf("\n");
+#endif
 
-        memcpy(out_buffer + next_free, i->data, i->size);
-        next_free += i->size;
-        chunks++;
+            if (*magic == kImage3TagData)
+                data = (uint32_t) next_free;
+            if (*magic == kImage3TagSignature)
+                shsh = (uint32_t) next_free;
+
+            memcpy(out_buffer + next_free, i->data, i->size);
+            next_free += i->size;
+        }
+
+        /* SHSH tag is not always present, if it isn't we use the end of file (next_free) in calculating offset */
+        shsh = shsh ? shsh : next_free;
+
+        DEBUG_PRINT("shsh %u data %u offset %u\n", shsh, data, offset(data, shsh) + 32);
+
+        Image3RootHeader *out_header = (Image3RootHeader *) out_buffer;
+        out_header->header.magic = kImage3Magic;
+        out_header->header.size = total_size + sizeof(Image3RootHeader);
+        out_header->header.dataSize = total_size;
+
+        out_header->shshExtension.shshOffset = offset(data, shsh) + 32;
+        out_header->shshExtension.imageType = orig->shshExtension.imageType;
+    }
+    else
+    {
+        size_t next_free = 0;
+        foreach_chunk(i)
+        {
+#ifdef DEBUG
+            uint32_t *magic = i->data;
+            printf("Parsing chunk ");
+            PRINT_MAGIC(*magic);
+            printf("\n");
+#endif
+            memcpy(out_buffer + next_free, i->data, i->size);
+            next_free += i->size;
+        }
     }
 
-    /* SHSH tag is not always present, if it isn't present we use the end of file (next_free) in calculating offset */
-    shsh = shsh ? shsh : next_free;
+    if (outfile != NULL)
+    {
+        FILE *fd;
+        fd = fopen(outfile, "wb");
 
-/*
-    printf("%u chunks\n", chunks);
-    printf("shsh %u data %u offset %u\n", shsh, data, offset(data, shsh) + 32);
-*/
+        if (!fd)
+        {
+            printf("[-] Can't open file for writing.\n");
+            return -1;
+        };
 
-    Image3RootHeader *out_header = (Image3RootHeader *) out_buffer;
-    out_header->header.magic = kImage3Magic;
-    out_header->header.size = total_size + sizeof(Image3RootHeader);
-    out_header->header.dataSize = total_size;
+        fwrite(out_buffer, total_size + sizeof(Image3RootHeader), 1, fd);
 
-    out_header->shshExtension.shshOffset = offset(data, shsh) + 32;
-    out_header->shshExtension.imageType = orig->shshExtension.imageType;
-
-    FILE* fd;
-    fd = fopen(argv[2],"wb");
-
-    if (!fd){
-        printf("[-] Can't open file for writing.\n");
-        return -1;
-    };
-
-    fwrite(out_buffer, total_size + sizeof(Image3RootHeader), 1, fd);
-
-    fclose(fd);
+        fclose(fd);
+    }
 
     return 0;
 }
