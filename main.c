@@ -19,7 +19,6 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <assert.h>
 #include <string.h>
 
 #include <openssl/aes.h>
@@ -201,7 +200,8 @@ void my_callback(Image3Header *tag, Image3RootHeader *root)
     /* decrypt the image */
     if(tag->magic == kImage3TagData)
     {
-        void *decompress_me = (tag + 1);
+        void *out_buff = (tag + 1);
+        int out_size = tag->dataSize;
 
         if (hasIV && hasKey)
         {
@@ -232,14 +232,6 @@ void my_callback(Image3Header *tag, Image3RootHeader *root)
             void *buf = _xmalloc(size);
             memcpy(buf, (tag + 1), size);
 
-            /* Decrypt data after the tag structure till dataSize aligned to the multiple of 16 (due to AES CBC) */
-            /*AES_cbc_encrypt((unsigned char *) (tag + 1),
-                            (unsigned char *) (tag + 1),
-                            (tag->dataSize / 16) * 16,
-                            &dec_key,
-                            ivec,
-                            AES_DECRYPT);*/
-
             AES_cbc_encrypt((unsigned char *) (buf),
                             (unsigned char *) (buf),
                             size,
@@ -250,23 +242,9 @@ void my_callback(Image3Header *tag, Image3RootHeader *root)
             if(!verify_data(root->shshExtension.imageType, buf))
                 printf("[W] You might have supplied wrong key/IV.\n");
 
-            Image3Header *new_tag = _xmalloc(sizeof(Image3Header));
+            out_buff = buf;
+            out_size = size;
 
-            /*new_tag->magic = tag->magic;
-            new_tag->dataSize = (tag->dataSize / 16) * 16;
-            new_tag->size = new_tag->dataSize + sizeof(Image3Header);*/
-
-            new_tag->magic = tag->magic;
-            new_tag->dataSize = size;
-            new_tag->size = new_tag->dataSize + sizeof(Image3Header);
-
-            if (!dumpData) /* omit the header if we're just dumping data */
-                add_chunk(new_tag, sizeof(Image3Header));
-
-            add_chunk(buf, new_tag->dataSize); /* add data */
-            chunk_added = 1; /* prevent duplication */
-
-            decompress_me = buf;
         }
 
         if (shouldPatch && (root->shshExtension.imageType == kImage3TypeiBoot ||
@@ -275,14 +253,8 @@ void my_callback(Image3Header *tag, Image3RootHeader *root)
                             root->shshExtension.imageType == kImage3TypeiLLB))
         {
             struct mapped_image img;
-            img.image = (uint8_t *) (tag + 1);
-            img.size = tag->dataSize;
-
-            if (hasKey && hasIV)
-            {
-                img.image = decompress_me;
-                img.size = tag->dataSize + (16 - (tag->dataSize % 16));
-            }
+            img.image = (uint8_t *) out_buff;
+            img.size = out_size;
 
             if (ibootsup_set_image(img) != 0)
                 printf("[-] Couldn't set image for patching. Is this correct file ?\n");
@@ -296,14 +268,14 @@ void my_callback(Image3Header *tag, Image3RootHeader *root)
             int decompressed_size = 0;
             void *decompressed;
 
-            if (kcache_decompress_kernel (decompress_me, NULL, &decompressed_size)) {
+            if (kcache_decompress_kernel (out_buff, NULL, &decompressed_size)) {
                 printf("[-] Cannot decompress kernel.\n");
                 goto cont;
             }
 
-            printf ("decompressed kernelcache size %d\n", decompressed_size);
+            printf ("[i] decompressed kernelcache size %d\n", decompressed_size);
             decompressed = _xmalloc (decompressed_size);
-            if (kcache_decompress_kernel (decompress_me, decompressed, &decompressed_size)) {
+            if (kcache_decompress_kernel (out_buff, decompressed, &decompressed_size)) {
                 free (decompressed);
                 printf("[-] Cannot decompress kernel.\n");
                 goto cont;
@@ -311,58 +283,20 @@ void my_callback(Image3Header *tag, Image3RootHeader *root)
 
             verify_data(root->shshExtension.imageType, decompressed);
 
-            /* if we have decrypted the file beforehand we must replace the last chunk (decrypted data) with new chunk
-             * containing decompressed data and fix tag header (chunk which is 2nd from end) */
-            if (hasKey && hasIV)
-            {
-                /* find the last tag and remove it */
-                struct chunk *last = first_chunk;
-                while (last->next != NULL)
-                {
-                    last = last->next;
-                }
-#ifdef DEBUG
-                uint32_t *magic = last->data;
-                printf("last ");
-                PRINT_MAGIC(*magic);
-                printf("\n");
-#endif
-                free(last->data);
+            out_buff = decompressed;
+            out_size = decompressed_size;
+        }
 
-                last->data = decompressed;
-                last->size = decompressed_size;
+        Image3Header *new_tag = _xmalloc(sizeof(Image3Header));
 
-                if(!dumpData)
-                {
-                    struct chunk *second_from_end = first_chunk;
-                    /* we won't segfault here     ˅ because we're sure we have added at least 2 chunks */
-                    while (second_from_end->next->next != NULL)
-                        second_from_end = second_from_end->next;
-#ifdef DEBUG
-                    magic = second_from_end->data;
-                    printf("second_from_end ");
-                    PRINT_MAGIC(*magic);
-                    printf("\n");
-#endif
-                    Image3Header *data_tag_header = second_from_end->data;
-                    data_tag_header->dataSize = decompressed_size;
-                    data_tag_header->size = data_tag_header->dataSize + sizeof(Image3Header);
-                }
-            }
-            else
-            {
-                Image3Header *new_tag = _xmalloc(sizeof(Image3Header));
-                new_tag->magic = tag->magic;
-                new_tag->dataSize = decompressed_size;
-                new_tag->size = new_tag->dataSize + sizeof(Image3Header);
+        new_tag->magic = tag->magic;
+        new_tag->dataSize = out_size;
+        new_tag->size = new_tag->dataSize + sizeof(Image3Header);
 
-                if (!dumpData) /* omit the header if we're just dumping data */
+        if (!dumpData) /* omit the header if we're just dumping data */
                     add_chunk(new_tag, sizeof(Image3Header));
 
-                add_chunk(decompressed, decompressed_size); /* add data */
-                chunk_added = 1;
-            }
-        }
+        add_chunk(out_buff, out_size);
     }
 
     cont:
@@ -400,8 +334,8 @@ int main(int argc, char* argv[])
 {
 
     if(argc < 3) {
-        printf("Usage: %s <infile> [<outfile>]\n", argv[0]);
-        printf("\nOther options are:\n");
+        printf("Usage: %s <infile> [<outfile>] <options>\n", argv[0]);
+        printf("\n<options> are:\n");
         printf("\t-iv <IV>\tset IV for decryption\n");
         printf("\t-k <key>\tset key for decryption\n");
         printf("\t-d, --dump\tprint tag names and hexdump their content\n");
@@ -410,6 +344,11 @@ int main(int argc, char* argv[])
         printf("\t-r, --raw\tdump the DATA tag to <outfile>\n");
         printf("\t-p, --patch\tpatch the file using ibootsup\n");
         printf("\t-x, --decompress\tdecompress lzss compressed kernelcache\n");
+        printf("\nCopyright 2015, danzatt <twitter.com/danzatt>\n");
+        printf("You should have received a copy of the GNU General Public License and source code along with "
+                       "this program. If you haven't, you should ask your source to provide one.\n");
+        printf("\nThanks to winocm for opensn0w-X, guys behind xpwntool and decodeimg3.pl for decryption logic, J from "
+                       "newosxbook.com for device tree headers.\n");
         return -1;
     }
 
