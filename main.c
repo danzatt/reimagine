@@ -297,6 +297,7 @@ void my_callback(Image3Header *tag, Image3RootHeader *root)
                     add_chunk(new_tag, sizeof(Image3Header));
 
         add_chunk(out_buff, out_size);
+        chunk_added = 1;
     }
 
     cont:
