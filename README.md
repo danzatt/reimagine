@@ -22,7 +22,7 @@ Other options are:
 * Pwned iBEC for kloader
 `reimagine iBEC.n90ap.RELEASE.dfu -k ... -iv ... -p -r`
 * Pwned iBoot for iBEC
-`reimagine iBoot.n90ap.RELEASE.img3 -k ... -iv ...`
+`reimagine iBoot.n90ap.RELEASE.img3 -k ... -iv ... -p`
 * Decrypt kernel and extract into MachO file
 `reimagine kernelcache.release.n90 kernel.macho -iv ... -k ... -x -r`
 
