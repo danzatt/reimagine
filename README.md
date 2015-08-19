@@ -4,9 +4,9 @@ This tool can be used for decrypting IMG files, listing, dumping their tags and 
 **Licensed under GNU GPL.** 
 
 ```
-Usage: reimagine <infile> [<outfile>]
+Usage: reimagine <infile> [<outfile>] <options>
 
-Other options are:
+<options> are:
 	-iv <IV>	set IV for decryption
 	-k <key>	set key for decryption
 	-d, --dump	print tag names and hexdump their content
@@ -15,6 +15,11 @@ Other options are:
 	-r, --raw	dump the DATA tag to <outfile>
 	-p, --patch	patch the file using ibootsup
 	-x, --decompress	decompress lzss compressed kernelcache
+
+Copyright 2015, danzatt <twitter.com/danzatt>
+You should have received a copy of the GNU General Public License and source code along with this program. If you haven't, you should ask your source to provide one.
+
+Thanks to winocm for opensn0w-X, guys behind xpwntool and decodeimg3.pl for decryption logic, J from newosxbook.com for device tree headers.
 
 ```
 
@@ -27,6 +32,6 @@ Other options are:
 `reimagine kernelcache.release.n90 kernel.macho -iv ... -k ... -x -r`
 
 #Building
-`git clone --recursive git@github.com:danzatt/reimagine.git`  
+`git clone --recursive https://github.com/danzatt/reimagine.git`  
 `cd reimagine/opensn0w-X/src && make all`  
 `cd ../.. && make`
