@@ -1,7 +1,7 @@
 CC=clang
-CFLAGS= -O2 -c -pipe -Wall -Wno-unused-function -std=c99
+CFLAGS= -m32 -O2 -c -pipe -Wall -Wno-unused-function -std=c99
 
-LDFLAGS= -L/usr/lib/x86_64-linux-gnu -lssl -lcrypto
+LDFLAGS= -lssl -lcrypto -m32
 
 all: reimagine
 

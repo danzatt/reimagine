@@ -32,6 +32,7 @@ Thanks to winocm for opensn0w-X, guys behind xpwntool and decodeimg3.pl for decr
 `reimagine kernelcache.release.n90 kernel.macho -iv ... -k ... -x -r`
 
 #Building
+You need 32bit OpenSSL (e.g. `sudo apt-get install libssl-dev:i386`).  
 `git clone --recursive https://github.com/danzatt/reimagine.git`  
 `cd reimagine/opensn0w-X/src && make all`  
 `cd ../.. && make`
