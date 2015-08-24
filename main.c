@@ -22,6 +22,7 @@
 #include <string.h>
 
 #include <openssl/aes.h>
+#include <sys/stat.h>
 
 #include "opensn0w-X/include/image3.h"
 #include "opensn0w-X/include/util.h"
@@ -48,7 +49,7 @@
                     (char)(a))          \
 
 
-//#define DEBUG
+/*#define DEBUG*/
 
 #ifdef DEBUG
 #define DEBUG_PRINT(...) do{ fprintf( stderr, __VA_ARGS__ ); } while( 0 )
@@ -57,6 +58,7 @@
 #endif
 
 char *outfile = NULL;
+char *stitchFile = NULL;
 
 unsigned int* key = NULL;
 unsigned int* iv = NULL;
@@ -70,6 +72,11 @@ int dumpData = 0;
 int shouldDecompress = 0;
 
 size_t keysize;
+
+static inline int round_up(int n, int m)
+{
+    return (n + m - 1) & ~(m - 1);
+}
 
 struct chunk;
 
@@ -131,10 +138,10 @@ int verify_data(const uint32_t magic, const void *buffer)
 
         case kImage3TypeKernel:
         {
-            uint32_t *byte_ptr = (uint32_t *) buffer;
+            uint32_t *ptr = (uint32_t *) buffer;
             DEBUG_PRINT("kernel magic 0x%x\n", kern_magic);
 
-            switch (*byte_ptr)
+            switch (*ptr)
             {
                 case kMachCigam:
                 {
@@ -148,7 +155,7 @@ int verify_data(const uint32_t magic, const void *buffer)
                 }
                 case __builtin_bswap32('comp'):
                 {
-                    if ( *(byte_ptr + 1) == __builtin_bswap32 ('lzss'))
+                    if ( *(ptr + 1) == __builtin_bswap32 ('lzss'))
                         printf("[i] This is lzss compressed kernel.\n");
                     else
                         printf("[i] This is compressed kernel.\n");
@@ -191,20 +198,18 @@ int verify_data(const uint32_t magic, const void *buffer)
 
 void my_callback(Image3Header *tag, Image3RootHeader *root)
 {
-    int chunk_added = 0;
-
-    /* remove KBAG if we're decrypting */
-    if(tag->magic == kImage3TagKeyBag && hasIV && hasKey)
-        return;
+    /* tag will be overwritten with this (if non NULL) in out file  */
+    void *out_buff = NULL;
+    int out_size = 0;
 
     /* decrypt the image */
     if(tag->magic == kImage3TagData)
     {
-        void *out_buff = (tag + 1);
-        int out_size = tag->dataSize;
-
         if (hasIV && hasKey)
         {
+            if (stitchFile != NULL)
+                printf("[i] Decrypting while file is set for stitching has no effect.\n");
+
             /* Ported from xpwntool & decodeimg3.pl */
             uint8_t my_iv[16];
             int i;
@@ -244,7 +249,40 @@ void my_callback(Image3Header *tag, Image3RootHeader *root)
 
             out_buff = buf;
             out_size = size;
+        }
 
+        if (stitchFile != NULL)
+        {
+            struct stat buf;
+
+            FILE *fp = fopen (stitchFile, "rb");
+
+            if (!fp)
+            {
+                printf("[-] Cannot open %s.\n", stitchFile);
+                exit(-1);
+            }
+            if (stat (stitchFile, &buf) > 0)
+            {
+                printf("[-] Cannot stat %s.\n", stitchFile);
+                fclose (fp);
+                exit(-1);
+            }
+
+            void *buffer = (uint8_t *) _xmalloc (buf.st_size);
+
+
+            if (!fread (buffer, buf.st_size, 1, fp))
+            {
+                printf("[-] Cannot read from %s.\n", stitchFile);
+                fclose (fp);
+                exit(-1);
+            }
+
+            fclose (fp);
+
+            out_buff = buffer;
+            out_size = buf.st_size;
         }
 
         if (shouldPatch && (root->shshExtension.imageType == kImage3TypeiBoot ||
@@ -286,18 +324,6 @@ void my_callback(Image3Header *tag, Image3RootHeader *root)
             out_buff = decompressed;
             out_size = decompressed_size;
         }
-
-        Image3Header *new_tag = _xmalloc(sizeof(Image3Header));
-
-        new_tag->magic = tag->magic;
-        new_tag->dataSize = out_size;
-        new_tag->size = new_tag->dataSize + sizeof(Image3Header);
-
-        if (!dumpData) /* omit the header if we're just dumping data */
-                    add_chunk(new_tag, sizeof(Image3Header));
-
-        add_chunk(out_buff, out_size);
-        chunk_added = 1;
     }
 
     cont:
@@ -315,19 +341,36 @@ void my_callback(Image3Header *tag, Image3RootHeader *root)
         hexdump(tag + 1, tag->dataSize);
     }
 
-    if (!chunk_added)
+    if (!dumpData)
     {
-        /* if dumpData is set we only want DATA tag */
-        if (dumpData && tag->magic == kImage3TagData)
+
+        if (out_buff != NULL && out_size != 0)
         {
-            add_chunk((tag+1), tag->size - sizeof(Image3Header));
+            Image3Header *new_tag = _xmalloc(sizeof(Image3Header));
+
+            new_tag->magic = tag->magic;
+            new_tag->dataSize = out_size;
+            new_tag->size = new_tag->dataSize + sizeof(Image3Header);
+            new_tag->size = round_up(new_tag->size, 4); /* padding */
+
+            add_chunk(new_tag, sizeof(Image3Header));
+            add_chunk(out_buff, out_size);
+        }
+        else
+        {
+            /* remove KBAG if we're decrypting add tag otherwise */
+            if ( !(tag->magic == kImage3TagKeyBag && hasIV && hasKey))
+                add_chunk(tag, tag->size);
         }
 
-        if (!dumpData)
-        {
-            add_chunk(tag, tag->size);
-        }
     }
+    else
+    {
+        /* if dumpData is set we only want DATA tag without header */
+        if (tag->magic == kImage3TagData)
+            add_chunk(out_buff, out_size);
+    }
+
 };
 
 
@@ -401,6 +444,10 @@ int main(int argc, char* argv[])
                 printf("[-] Check your IV, it has to be 16 bytes.\n");
             else
                 hasIV = 1;
+        }
+
+        if(strcmp(argv[argNo], "-data") == 0 && (argNo + 1) < argc) {
+            stitchFile = argv[argNo + 1];
         }
 
         argNo++;
