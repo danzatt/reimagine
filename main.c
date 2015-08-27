@@ -139,7 +139,6 @@ int verify_data(const uint32_t magic, const void *buffer)
         case kImage3TypeKernel:
         {
             uint32_t *ptr = (uint32_t *) buffer;
-            DEBUG_PRINT("kernel magic 0x%x\n", kern_magic);
 
             switch (*ptr)
             {
@@ -347,11 +346,13 @@ void my_callback(Image3Header *tag, Image3RootHeader *root)
         if (out_buff != NULL && out_size != 0)
         {
             Image3Header *new_tag = _xmalloc(sizeof(Image3Header));
-
             new_tag->magic = tag->magic;
             new_tag->dataSize = out_size;
-            new_tag->size = new_tag->dataSize + sizeof(Image3Header);
-            new_tag->size = round_up(new_tag->size, 4); /* padding */
+
+            out_size = round_up(out_size, 4); /* padding */
+            out_buff = realloc(out_buff, out_size);
+
+            new_tag->size = out_size + sizeof(Image3Header);
 
             add_chunk(new_tag, sizeof(Image3Header));
             add_chunk(out_buff, out_size);
@@ -362,13 +363,17 @@ void my_callback(Image3Header *tag, Image3RootHeader *root)
             if ( !(tag->magic == kImage3TagKeyBag && hasIV && hasKey))
                 add_chunk(tag, tag->size);
         }
-
     }
     else
     {
         /* if dumpData is set we only want DATA tag without header */
         if (tag->magic == kImage3TagData)
-            add_chunk(out_buff, out_size);
+        {
+            if (out_buff != NULL && out_size != 0)
+                add_chunk(out_buff, out_size);
+            else
+                add_chunk(tag + 1, tag->dataSize);
+        }
     }
 
 };
